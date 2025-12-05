@@ -1,25 +1,33 @@
 import numpy as np
 import pandas as pd
-from tensorflow.keras.models import load_model
 from sklearn.preprocessing import MinMaxScaler
+import joblib
 
-# Load original data
-df = pd.read_csv("./data/preprocess-QDL-OPEC.csv")
-values = df['value'].values.reshape(-1, 1)
+# TensorFlow is imported lazily to avoid heavy imports during unit testing
+def load_lstm_model(path: str):
+    from tensorflow.keras.models import load_model
+    return load_model(path)
 
-# Apply the same scaling used during training
-scaler = MinMaxScaler()
-scaled_values = scaler.fit_transform(values)
 
-# Use the last 50 values as input
-last_50 = scaled_values[-50:]
-input_data = np.array(last_50).reshape(1, 50, 1)
+def load_series(path: str) -> np.ndarray:
+    """Load a time series from a CSV file and return it as a (N, 1) array."""
+    df = pd.read_csv(path)
+    return df["value"].values.reshape(-1, 1)
 
-# Load trained model
-model = load_model("model_lstm.h5")
 
-# Predict
-scaled_pred = model.predict(input_data)
-prediction = scaler.inverse_transform(scaled_pred)[0][0]
+def load_scaler(path: str) -> MinMaxScaler:
+    """Load a previously fitted MinMaxScaler using joblib."""
+    return joblib.load(path)
 
-print("Predicted value:", prediction)
+
+def prepare_input(values: np.ndarray, window: int = 50) -> np.ndarray:
+    if len(values) < window:
+        raise ValueError(f"Not enough data: at least {window} values are required.")
+    return values[-window:].reshape(1, window, 1)
+
+
+def predict_next(model, scaler: MinMaxScaler, raw_values: np.ndarray) -> float:
+    scaled = scaler.transform(raw_values)
+    inp = prepare_input(scaled, window=50)
+    scaled_pred = model.predict(inp)
+    return float(scaler.inverse_transform(scaled_pred)[0][0])
