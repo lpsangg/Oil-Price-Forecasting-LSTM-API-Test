@@ -1,13 +1,20 @@
+import asyncio
 import os
 import sys
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import List
 
 import joblib
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
 
 # Add parent directory to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -15,20 +22,25 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from model.lstm_model import LSTMModel
 from model.preprocess import preprocess_data
 
-app = FastAPI(
-    title="Oil Price Forecasting API",
-    description="LSTM-based crude oil price forecasting API",
-    version="1.0.0",
-)
+# Rate limiter initialization (Keyed by client IP address)
+limiter = Limiter(key_func=get_remote_address, default_limits=["120/minute"])
 
-# CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Asynchronous lock to guarantee only one model training session runs at a time
+train_lock = asyncio.Lock()
+
+
+def custom_rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    """Custom handler for RateLimitExceeded returning standard 429 response"""
+    return JSONResponse(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        content={
+            "error": "Too Many Requests",
+            "detail": f"Rate limit exceeded: {exc.detail}",
+            "retry_after": "60 seconds",
+        },
+        headers={"Retry-After": "60"},
+    )
+
 
 # Load model and scaler at startup
 model = None
@@ -40,27 +52,57 @@ def load_saved_model():
     try:
         if os.path.exists("models/lstm_model.keras"):
             model = LSTMModel.load("models/lstm_model.keras")
-            print("✓ Model loaded successfully")
+            print("[INFO] Model loaded successfully")
         if os.path.exists("models/scaler.pkl"):
             scaler = joblib.load("models/scaler.pkl")
-            print("✓ Scaler loaded successfully")
+            print("[INFO] Scaler loaded successfully")
     except Exception as e:
-        print(f"⚠ Warning: Could not load model: {e}")
+        print(f"[WARNING] Could not load model: {e}")
 
 
-@app.on_event("startup")
-async def startup_event():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     load_saved_model()
+    yield
 
 
-# Also load on import for direct TestClient usage
+app = FastAPI(
+    title="Oil Price Forecasting API",
+    description="Quantitative LSTM-based crude oil price forecasting API with rate limiting and concurrency protection",
+    version="1.1.0",
+    lifespan=lifespan,
+)
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, custom_rate_limit_handler)
+app.add_middleware(SlowAPIMiddleware)
+
+# CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Load on import for direct TestClient usage
 load_saved_model()
 
 
 # Request/Response schemas
 class PredictionRequest(BaseModel):
-    data: List[float]
-    window: int = 60
+    data: List[float] = Field(
+        default_factory=list,
+        max_length=1000,
+        description="Historical oil price sequence (at least 'window' items, maximum 1000 items)",
+    )
+    window: int = Field(
+        60,
+        ge=3,
+        le=200,
+        description="Lookback window size (between 3 and 200)",
+    )
 
 
 class PredictionResponse(BaseModel):
@@ -69,10 +111,28 @@ class PredictionResponse(BaseModel):
 
 
 class TrainRequest(BaseModel):
-    csv_path: str = "data/preprocess-QDL-OPEC.csv"
-    window: int = 60
-    epochs: int = 50
-    batch_size: int = 32
+    csv_path: str = Field(
+        "data/preprocess-QDL-OPEC.csv",
+        description="Path to CSV file with oil price data",
+    )
+    window: int = Field(
+        60,
+        ge=3,
+        le=200,
+        description="Lookback window size (between 3 and 200)",
+    )
+    epochs: int = Field(
+        50,
+        ge=1,
+        le=100,
+        description="Number of training epochs (between 1 and 100)",
+    )
+    batch_size: int = Field(
+        32,
+        ge=1,
+        le=512,
+        description="Batch size for training (between 1 and 512)",
+    )
 
 
 class HealthResponse(BaseModel):
@@ -82,11 +142,12 @@ class HealthResponse(BaseModel):
 
 # API endpoints
 @app.get("/", response_model=dict)
-async def root():
+@limiter.limit("120/minute")
+async def root(request: Request):
     """Root endpoint with API information"""
     return {
         "message": "Oil Price Forecasting API",
-        "version": "1.0.0",
+        "version": "1.1.0",
         "endpoints": {
             "/health": "Check API health",
             "/predict": "Make prediction (POST)",
@@ -98,7 +159,8 @@ async def root():
 
 
 @app.get("/health", response_model=HealthResponse)
-async def health():
+@limiter.limit("120/minute")
+async def health(request: Request):
     """Health check endpoint"""
     return {
         "status": "healthy",
@@ -107,12 +169,13 @@ async def health():
 
 
 @app.post("/predict", response_model=PredictionResponse)
-async def predict(request: PredictionRequest):
+@limiter.limit("60/minute")
+async def predict(request: Request, body: PredictionRequest):
     """
-    Make oil price prediction
+    Make oil price prediction with rate limiting and payload validation.
 
-    - **data**: List of historical prices (at least 'window' data points)
-    - **window**: Lookback window size (default: 60)
+    - **data**: List of historical prices (at least 'window' data points, max 1000)
+    - **window**: Lookback window size (default: 60, range: 3-200)
     """
 
     if model is None or scaler is None:
@@ -121,21 +184,21 @@ async def predict(request: PredictionRequest):
             detail="Model not loaded. Please train the model first using /train endpoint",
         )
 
-    if len(request.data) < request.window:
+    if len(body.data) < body.window:
         raise HTTPException(
             status_code=400,
-            detail=f"Need at least {request.window} data points, got {len(request.data)}",
+            detail=f"Need at least {body.window} data points, got {len(body.data)}",
         )
 
     try:
         # Take last window values
-        recent_data = np.array(request.data[-request.window :])
+        recent_data = np.array(body.data[-body.window :])
 
         # Scale data
         scaled_data = scaler.transform(recent_data.reshape(-1, 1))
 
         # Reshape for LSTM [samples, timesteps, features]
-        X = scaled_data.reshape(1, request.window, 1)
+        X = scaled_data.reshape(1, body.window, 1)
 
         # Predict
         scaled_prediction = model.predict(X)
@@ -152,65 +215,75 @@ async def predict(request: PredictionRequest):
 
 
 @app.post("/train")
-async def train(request: TrainRequest):
+@limiter.limit("10/minute")
+async def train(request: Request, body: TrainRequest):
     """
-    Train the LSTM model
+    Train the LSTM model with concurrency protection, rate limiting, and parameter validation.
 
     - **csv_path**: Path to CSV file with oil price data
-    - **window**: Lookback window size
-    - **epochs**: Number of training epochs
-    - **batch_size**: Batch size for training
+    - **window**: Lookback window size (3 - 200)
+    - **epochs**: Number of training epochs (1 - 100)
+    - **batch_size**: Batch size for training (1 - 512)
     """
     global model, scaler
 
-    if not os.path.exists(request.csv_path):
+    # 1. Concurrency Check: If a training session is active, reject immediately with 409 Conflict
+    if train_lock.locked():
         raise HTTPException(
-            status_code=404, detail=f"Data file not found: {request.csv_path}"
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A model training job is already in progress. Please wait for completion before submitting a new job.",
         )
 
-    try:
-        # Preprocess data
-        X_train, X_test, y_train, y_test, new_scaler = preprocess_data(
-            request.csv_path, window=request.window
+    if not os.path.exists(body.csv_path):
+        raise HTTPException(
+            status_code=404, detail=f"Data file not found: {body.csv_path}"
         )
 
-        # Create and train model
-        input_shape = (request.window, 1)
-        new_model = LSTMModel(input_shape)
+    async with train_lock:
+        try:
+            # Execute CPU-intensive training in worker thread to prevent blocking event loop
+            def _run_training():
+                global model, scaler
+                X_train, X_test, y_train, y_test, new_scaler = preprocess_data(
+                    body.csv_path, window=body.window
+                )
 
-        history = new_model.train(
-            X_train,
-            y_train,
-            X_test,
-            y_test,
-            epochs=request.epochs,
-            batch_size=request.batch_size,
-        )
+                input_shape = (body.window, 1)
+                new_model = LSTMModel(input_shape)
 
-        # Create models directory if not exists
-        os.makedirs("models", exist_ok=True)
+                history = new_model.train(
+                    X_train,
+                    y_train,
+                    X_test,
+                    y_test,
+                    epochs=body.epochs,
+                    batch_size=body.batch_size,
+                )
 
-        # Save model and scaler
-        new_model.save("models/lstm_model.keras")
-        joblib.dump(new_scaler, "models/scaler.pkl")
+                os.makedirs("models", exist_ok=True)
+                new_model.save("models/lstm_model.keras")
+                joblib.dump(new_scaler, "models/scaler.pkl")
 
-        # Update global variables
-        model = new_model
-        scaler = new_scaler
+                model = new_model
+                scaler = new_scaler
 
-        return {
-            "message": "Training completed successfully",
-            "final_loss": float(history.history["loss"][-1]),
-            "final_val_loss": float(history.history["val_loss"][-1]),
-            "epochs_completed": len(history.history["loss"]),
-        }
+                return {
+                    "message": "Training completed successfully",
+                    "final_loss": float(history.history["loss"][-1]),
+                    "final_val_loss": float(history.history["val_loss"][-1]),
+                    "epochs_completed": len(history.history["loss"]),
+                }
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Training error: {str(e)}")
+            result = await asyncio.to_thread(_run_training)
+            return result
+
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Training error: {str(e)}")
 
 
 @app.get("/model/info")
-async def model_info():
+@limiter.limit("120/minute")
+async def model_info(request: Request):
     """Get information about the loaded model"""
 
     if model is None:

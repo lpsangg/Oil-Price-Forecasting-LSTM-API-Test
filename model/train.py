@@ -71,7 +71,7 @@ def train_pipeline(
         joblib.dump(last_scaler, "models/scaler.pkl")
         joblib.dump(last_scaler, "checkpoint/scaler.pkl")
         print(
-            "\n✓ Final model saved to models/lstm_model.keras and scaler saved to models/scaler.pkl"
+            "\n[INFO] Final model saved to models/lstm_model.keras and scaler saved to models/scaler.pkl"
         )
 
 
