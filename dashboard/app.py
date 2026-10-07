@@ -15,6 +15,7 @@ if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
 from dashboard.utils import (
+    compute_portfolio_risk_metrics,
     compute_technical_indicators,
     fetch_live_market_data,
     load_artifacts,
@@ -530,11 +531,12 @@ st.divider()
 # ---------------------------------------------------------
 # Tabbed Navigation
 # ---------------------------------------------------------
-tab_analytics, tab_forecast, tab_backtest, tab_architecture = st.tabs(
+tab_analytics, tab_forecast, tab_backtest, tab_risk, tab_architecture = st.tabs(
     [
         "Market Charts & Technicals",
         "Multi-Step Forecast (7-30D)",
         "Historical Backtesting & Validation",
+        "Portfolio Risk & Quant Metrics",
         "Model Architecture & Benchmarks",
     ]
 )
@@ -1088,7 +1090,290 @@ with tab_backtest:
 
 
 # =========================================================
-# TAB 4: ARCHITECTURE & BENCHMARK COMPARISON
+# TAB 4: PORTFOLIO RISK & QUANT METRICS
+# =========================================================
+with tab_risk:
+    st.subheader("Energy Portfolio Risk & Quantitative Capital Analytics")
+    st.markdown(
+        "Institutional tail-risk quantification (Historical & Parametric VaR, Expected Shortfall CVaR), "
+        "risk-adjusted performance ratios (Sharpe, Sortino, Calmar), maximum drawdown profiling, and macroeconomic stress testing."
+    )
+
+    # Configuration controls
+    r_col1, r_col2, r_col3 = st.columns([1.5, 1.2, 1.3])
+    with r_col1:
+        notional_input = st.number_input(
+            "Portfolio Notional Capital ($ USD)",
+            min_value=10_000.0,
+            max_value=100_000_000.0,
+            value=100_000.0,
+            step=25_000.0,
+            help="Total investment capital exposed to crude oil price volatility",
+        )
+    with r_col2:
+        rf_rate_input = st.slider(
+            "Risk-Free Rate (Annual %)",
+            min_value=0.0,
+            max_value=10.0,
+            value=4.25,
+            step=0.25,
+            help="US 10-Year Treasury Yield benchmark for Sharpe/Sortino calculations",
+        )
+    with r_col3:
+        horizon_filter = st.selectbox(
+            "Risk Sample Horizon",
+            [
+                "Last 1 Year (252D)",
+                "Last 3 Years (756D)",
+                "Last 5 Years (1260D)",
+                "Full Historical Series",
+            ],
+            index=1,
+            help="Historical data window used to compute empirical distribution and tail risk",
+        )
+
+    # Slice data for risk modeling
+    if horizon_filter == "Last 1 Year (252D)":
+        risk_sample_df = df.iloc[-252:].copy()
+    elif horizon_filter == "Last 3 Years (756D)":
+        risk_sample_df = df.iloc[-756:].copy()
+    elif horizon_filter == "Last 5 Years (1260D)":
+        risk_sample_df = df.iloc[-1260:].copy()
+    else:
+        risk_sample_df = df.copy()
+
+    risk_metrics = compute_portfolio_risk_metrics(
+        price_series=risk_sample_df["value"],
+        dates=risk_sample_df["date"],
+        risk_free_rate=rf_rate_input / 100.0,
+        notional=notional_input,
+    )
+
+    # Section 1: KPI Cards
+    rk1, rk2, rk3, rk4 = st.columns(4)
+    with rk1:
+        st.metric(
+            label="1-DAY VALUE AT RISK (95%)",
+            value=f"-{risk_metrics['var_95_1d_pct']:.2f}%",
+            delta=f"-${risk_metrics['var_95_1d_dollar']:,.0f} Max Loss",
+            delta_color="inverse",
+            help="Maximum expected loss over 1 business day at 95% confidence under normal market conditions",
+        )
+    with rk2:
+        st.metric(
+            label="CONDITIONAL VAR (CVAR 95%)",
+            value=f"-{risk_metrics['cvar_95_1d_pct']:.2f}%",
+            delta=f"-${risk_metrics['cvar_95_1d_dollar']:,.0f} Expected Shortfall",
+            delta_color="inverse",
+            help="Average loss incurred when market downturn exceeds the 95% VaR threshold",
+        )
+    with rk3:
+        sharpe_val = risk_metrics["sharpe_ratio"]
+        sortino_val = risk_metrics["sortino_ratio"]
+        st.metric(
+            label="SHARPE / SORTINO RATIO",
+            value=f"{sharpe_val:.2f} / {sortino_val:.2f}",
+            delta=f"Ann. Vol: {risk_metrics['ann_volatility']:.1f}%",
+            delta_color="normal" if sharpe_val > 0 else "off",
+            help="Risk-adjusted excess return over US Treasury benchmark (Sortino penalizes downside volatility only)",
+        )
+    with rk4:
+        st.metric(
+            label="MAXIMUM DRAWDOWN (MDD)",
+            value=f"{risk_metrics['mdd_pct']:.1f}%",
+            delta=f"-${risk_metrics['mdd_dollar']:,.0f} Peak Drop",
+            delta_color="inverse",
+            help="Largest peak-to-trough drop in historical asset value across the selected window",
+        )
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Section 2: Returns Distribution & VaR Cutoffs + Drawdown Profile
+    chart_col1, chart_col2 = st.columns(2)
+
+    with chart_col1:
+        st.markdown("##### Return Distribution & Tail Risk Cutoffs")
+        returns_pct = risk_metrics["returns"] * 100.0
+
+        fig_dist = go.Figure()
+        fig_dist.add_trace(
+            go.Histogram(
+                x=returns_pct,
+                nbinsx=50,
+                histnorm="probability density",
+                name="Daily Returns",
+                marker=dict(
+                    color=(
+                        "rgba(2, 132, 199, 0.45)"
+                        if is_light
+                        else "rgba(0, 210, 255, 0.35)"
+                    ),
+                    line=dict(color="#0284c7" if is_light else "#00d2ff", width=1),
+                ),
+            )
+        )
+
+        # VaR 95% Cutoff line
+        fig_dist.add_vline(
+            x=-risk_metrics["var_95_1d_pct"],
+            line_width=2,
+            line_dash="dash",
+            line_color="#f59e0b",
+            annotation_text=f"VaR 95%: -{risk_metrics['var_95_1d_pct']:.2f}%",
+            annotation_position="top left",
+        )
+
+        # VaR 99% Cutoff line
+        fig_dist.add_vline(
+            x=-risk_metrics["var_99_1d_pct"],
+            line_width=2,
+            line_dash="dot",
+            line_color="#ef4444",
+            annotation_text=f"VaR 99%: -{risk_metrics['var_99_1d_pct']:.2f}%",
+            annotation_position="top left",
+        )
+
+        # CVaR 95% line
+        fig_dist.add_vline(
+            x=-risk_metrics["cvar_95_1d_pct"],
+            line_width=2,
+            line_dash="solid",
+            line_color="#dc2626",
+            annotation_text=f"CVaR 95%: -{risk_metrics['cvar_95_1d_pct']:.2f}%",
+            annotation_position="bottom left",
+        )
+
+        fig_dist.update_layout(
+            template=plotly_template,
+            height=380,
+            xaxis_title="Daily Return (%)",
+            yaxis_title="Probability Density",
+            margin=dict(l=40, r=40, t=30, b=40),
+            showlegend=False,
+        )
+        st.plotly_chart(fig_dist, use_container_width=True)
+
+    with chart_col2:
+        st.markdown("##### Underwater Drawdown Curve (% from Peak)")
+        rolling_df = risk_metrics["rolling_df"]
+
+        fig_dd = go.Figure()
+        fig_dd.add_trace(
+            go.Scatter(
+                x=rolling_df["date"],
+                y=rolling_df["drawdown"],
+                mode="lines",
+                name="Drawdown",
+                fill="tozeroy",
+                fillcolor="rgba(239, 68, 68, 0.15)",
+                line=dict(color="#ef4444", width=1.5),
+            )
+        )
+        fig_dd.update_layout(
+            template=plotly_template,
+            height=380,
+            xaxis_title="Date",
+            yaxis_title="Drawdown (%)",
+            margin=dict(l=40, r=40, t=30, b=40),
+            showlegend=False,
+        )
+        st.plotly_chart(fig_dd, use_container_width=True)
+
+    # Section 3: Rolling Volatility & Sharpe Dynamics
+    st.markdown("##### Rolling 60-Day Volatility & Sharpe Regime Dynamics")
+    fig_rolling = make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.10,
+        subplot_titles=(
+            "Annualized 60-Day Rolling Volatility (%)",
+            "60-Day Rolling Sharpe Ratio",
+        ),
+    )
+
+    fig_rolling.add_trace(
+        go.Scatter(
+            x=rolling_df["date"],
+            y=rolling_df["rolling_vol_60d"],
+            mode="lines",
+            name="Rolling Volatility (60D)",
+            line=dict(color="#00d2ff" if not is_light else "#0284c7", width=1.8),
+        ),
+        row=1,
+        col=1,
+    )
+    fig_rolling.add_hline(
+        y=risk_metrics["ann_volatility"],
+        line_dash="dash",
+        line_color="#64748b",
+        annotation_text=f"Mean Vol: {risk_metrics['ann_volatility']:.1f}%",
+        row=1,
+        col=1,
+    )
+
+    fig_rolling.add_trace(
+        go.Scatter(
+            x=rolling_df["date"],
+            y=rolling_df["rolling_sharpe_60d"],
+            mode="lines",
+            name="Rolling Sharpe (60D)",
+            line=dict(color="#10b981", width=1.8),
+        ),
+        row=2,
+        col=1,
+    )
+    fig_rolling.add_hline(
+        y=0.0,
+        line_dash="solid",
+        line_color="#ef4444",
+        line_width=1,
+        row=2,
+        col=1,
+    )
+    fig_rolling.add_hline(
+        y=1.0, line_dash="dot", line_color="#10b981", line_width=1, row=2, col=1
+    )
+
+    fig_rolling.update_layout(
+        template=plotly_template,
+        height=480,
+        showlegend=False,
+        margin=dict(l=40, r=40, t=40, b=40),
+    )
+    fig_rolling.update_yaxes(title_text="Volatility (%)", row=1, col=1)
+    fig_rolling.update_yaxes(title_text="Sharpe Ratio", row=2, col=1)
+    st.plotly_chart(fig_rolling, use_container_width=True)
+
+    # Section 4: Macro Scenario Stress Testing Matrix
+    st.markdown("##### Historical Macro Stress Testing & Tail Scenario Analysis")
+    st.caption(
+        f"Hypothetical PnL impact simulated on the active portfolio notional of **${notional_input:,.0f} USD**:"
+    )
+
+    stress_data = []
+    for sc in risk_metrics["stress_scenarios"]:
+        pnl = sc["impact_dollar"]
+        pct = sc["benchmark_shock"]
+        stress_data.append(
+            {
+                "Scenario / Event": sc["event"],
+                "Historical Shock (%)": f"{'+' if pct > 0 else ''}{pct:.1f}%",
+                "Projected Portfolio PnL ($)": (
+                    f"{'+$' if pnl >= 0 else '-$'}{abs(pnl):,.0f}"
+                ),
+                "Remaining Portfolio Value ($)": (
+                    f"${max(0.0, notional_input + pnl):,.0f}"
+                ),
+                "Market Context": sc["description"],
+            }
+        )
+
+    st.dataframe(pd.DataFrame(stress_data), use_container_width=True, hide_index=True)
+
+
+# =========================================================
+# TAB 5: ARCHITECTURE & BENCHMARK COMPARISON
 # =========================================================
 with tab_architecture:
     st.subheader("Deep Learning Architecture & Quantitative Benchmarks")

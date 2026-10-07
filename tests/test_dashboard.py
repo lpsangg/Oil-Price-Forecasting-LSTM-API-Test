@@ -126,3 +126,69 @@ def test_run_backtest_simulation():
     assert "actual" in comp_df.columns
     assert "forecast" in comp_df.columns
     assert "error" in comp_df.columns
+
+
+def test_compute_portfolio_risk_metrics_comprehensive():
+    """Verify VaR, CVaR, Sharpe, Sortino, MDD, and stress testing logic."""
+    from dashboard.utils import compute_portfolio_risk_metrics
+
+    # Simulated price series with known fluctuations
+    np.random.seed(42)
+    dates = pd.date_range("2023-01-01", periods=100)
+    prices = pd.Series(70.0 + np.cumsum(np.random.normal(0.05, 1.2, 100)), index=dates)
+
+    res = compute_portfolio_risk_metrics(
+        price_series=prices,
+        dates=pd.Series(dates),
+        risk_free_rate=0.04,
+        notional=100000.0,
+    )
+
+    assert "var_95_1d_pct" in res
+    assert "var_99_1d_pct" in res
+    assert "cvar_95_1d_pct" in res
+    assert "mdd_pct" in res
+    assert "sharpe_ratio" in res
+    assert "sortino_ratio" in res
+    assert "calmar_ratio" in res
+
+    # Monotonicity of tail risk: 99% VaR >= 95% VaR
+    assert res["var_99_1d_pct"] >= res["var_95_1d_pct"]
+
+    # Expected shortfall CVaR >= VaR
+    assert res["cvar_95_1d_pct"] >= res["var_95_1d_pct"]
+
+    # 1-Week VaR should be greater than 1-Day VaR (time-scaling)
+    assert res["var_95_1w_pct"] > res["var_95_1d_pct"]
+
+    # Maximum Drawdown must be non-positive
+    assert res["mdd_pct"] <= 0.0
+
+    # Dollar amounts align with notional
+    assert res["var_95_1d_dollar"] == pytest.approx(
+        100000.0 * (res["var_95_1d_pct"] / 100.0), rel=1e-3
+    )
+
+    # Stress testing scenarios
+    assert len(res["stress_scenarios"]) == 5
+    for sc in res["stress_scenarios"]:
+        assert "event" in sc
+        assert "benchmark_shock" in sc
+        assert "impact_dollar" in sc
+
+    # Rolling metrics DataFrame
+    assert len(res["rolling_df"]) == 99
+    assert "drawdown" in res["rolling_df"].columns
+    assert "rolling_vol_60d" in res["rolling_df"].columns
+    assert "rolling_sharpe_60d" in res["rolling_df"].columns
+
+
+def test_compute_portfolio_risk_metrics_insufficient_data():
+    """Verify safe fallback when series has fewer than 10 points."""
+    from dashboard.utils import compute_portfolio_risk_metrics
+
+    short_prices = pd.Series([70.0, 71.0, 72.0])
+    res = compute_portfolio_risk_metrics(short_prices)
+    assert "error" in res
+    assert res["var_95_1d_pct"] == 0.0
+    assert res["mdd_pct"] == 0.0

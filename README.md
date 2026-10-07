@@ -6,7 +6,7 @@
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.30%2B-FF4B4B.svg?logo=streamlit&logoColor=white)](https://streamlit.io)
 [![Plotly](https://img.shields.io/badge/Plotly-5.18%2B-3F4F75.svg?logo=plotly&logoColor=white)](https://plotly.com)
 [![TensorFlow](https://img.shields.io/badge/TensorFlow-2.13%2B-FF6F00.svg?logo=tensorflow&logoColor=white)](https://www.tensorflow.org/)
-[![Tests](https://img.shields.io/badge/tests-28%20passed-brightgreen.svg)](https://pytest.org)
+[![Tests](https://img.shields.io/badge/tests-30%20passed-brightgreen.svg)](https://pytest.org)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -29,6 +29,7 @@ An institutional-grade deep learning system combining **hybrid CNN-BiLSTM multi-
   - [Live Commodity Streaming](#live-commodity-streaming)
   - [Probabilistic Multi-Step Forecasting](#probabilistic-multi-step-forecasting)
   - [Historical Backtesting Sandbox](#historical-backtesting-sandbox)
+  - [Portfolio Risk & Capital Analytics](#portfolio-risk--capital-analytics)
   - [Executive Factsheet Export (Print to PDF)](#executive-factsheet-export-print-to-pdf)
 - [Deep Learning Architecture & Methodology](#deep-learning-architecture--methodology)
   - [Model Topology](#model-topology)
@@ -108,7 +109,8 @@ flowchart TD
 ## Key Features
 
 - **Hybrid CNN-BiLSTM Architecture**: Combines spatial convolution filters to detect sharp price shifts with bidirectional temporal cells to maintain macro trend memory.
-- **Interactive Financial Dashboard**: Streamlit & Plotly platform with real-time Yahoo Finance streaming, technical overlays, multi-step probabilistic forecasts, and backtesting.
+- **Interactive Financial Dashboard**: Streamlit & Plotly platform with real-time Yahoo Finance streaming, technical overlays, multi-step probabilistic forecasts, risk analytics, and backtesting.
+- **Portfolio Risk & Capital Analytics**: Quantitative tail-risk quantification (Historical & Parametric VaR 95%/99%, Expected Shortfall CVaR), risk-adjusted performance ratios (Sharpe, Sortino, Calmar), Maximum Drawdown profiling, and macroeconomic stress testing.
 - **Dynamic Risk Band Formulations**: Calculates dynamic uncertainty bands ($\pm z \cdot \sigma_{\text{residual}} \sqrt{h}$) expanding over the forward horizon.
 - **Historical Backtesting Sandbox**: Interactive out-of-sample simulation at any historical cutoff (e.g., 2020 market crash, 2022 shock) with live MAE, RMSE, MAPE, and Directional Accuracy.
 - **Production Anti-Abuse Gateway**: Multi-tiered protection against denial-of-service and resource exhaustion:
@@ -117,7 +119,7 @@ flowchart TD
   - `HTTP 422`: Schema payload bounds checking on sequence length and hyperparameters.
 - **Executive Factsheet Engine**: Dedicated `@media print` CSS engine converting the interactive dashboard into a clean, high-contrast, border-aligned A4 PDF factsheet.
 - **Dual Display Modes**: Seamless switching between Dark Mode (Bloomberg/TradingView terminal style) and Light Mode (corporate investment memo style).
-- **100% Passing Test Suite**: 28 unit tests covering models, data, API security, and dashboard utilities.
+- **100% Passing Test Suite**: 30 unit tests covering models, data, API security, and quantitative risk dashboard utilities.
 
 ---
 
@@ -153,6 +155,22 @@ The backtesting module enables empirical validation at any historical date. The 
 ![Historical Backtesting Sandbox](docs/assets/backtest_analysis.png)
 
 *Figure: Out-of-sample backtest simulation comparing model trajectory against actual price movements, with residual error bars and metric scorecard.*
+
+---
+
+### Portfolio Risk & Capital Analytics
+
+Beyond price point forecasting, energy commodity trading desks require comprehensive capital exposure and tail-risk quantification:
+
+- **Value at Risk (VaR 95% & 99%)**: Measures maximum expected portfolio loss over 1-day and 1-week horizons under both empirical historical and parametric Gaussian distributions.
+- **Conditional VaR (CVaR / Expected Shortfall)**: Quantifies the expected average loss incurred when an extreme market crash breaches the 95% VaR cutoff.
+- **Risk-Adjusted Ratios (Sharpe & Sortino)**: Benchmark excess return against the US 10-Year Treasury Yield ($R_f = 4.25\%$). The Sortino ratio isolates downside volatility from upside variance.
+- **Maximum Drawdown (MDD) & Underwater Profiling**: Measures peak-to-trough capital erosion with full duration tracking.
+- **Macro Scenario Stress Testing**: Simulates historical energy shocks (2008 Subprime Crash, 2014 OPEC Price War, 2020 Covid Shock, 2022 Conflict Spike, 3-Sigma Flash Crash) with direct Dollar PnL impact calculated on active capital.
+
+![Portfolio Risk & Capital Analytics](docs/assets/risk_metrics_preview.png)
+
+*Figure: 4-panel institutional risk analytics view featuring daily return distribution with VaR/CVaR tail cutoffs, underwater drawdown profile, rolling 60-day volatility, and rolling Sharpe ratio dynamics.*
 
 ---
 
@@ -463,6 +481,7 @@ Oil-Price-Forecasting-LSTM-API-Test/
 │       ├── dashboard_preview.png # Financial trading terminal mockup
 │       ├── forecast_risk_band.png# 30-day recursive forecast with risk cone
 │       ├── backtest_analysis.png # Historical simulation & residual analysis
+│       ├── risk_metrics_preview.png # Portfolio risk & VaR/CVaR analytics
 │       └── factsheet_pdf_preview.png # Executive A4 factsheet printout preview
 │
 ├── model/
@@ -481,7 +500,7 @@ Oil-Price-Forecasting-LSTM-API-Test/
 ├── tests/
 │   ├── __init__.py
 │   ├── test_api.py               # REST API endpoints unit tests (11 tests)
-│   ├── test_dashboard.py         # Rolling engine & technical indicator tests (6 tests)
+│   ├── test_dashboard.py         # Rolling engine, indicators & risk tests (8 tests)
 │   ├── test_data.py              # Raw data loading verification (1 test)
 │   ├── test_dataset.py           # Tensor shape & window stride tests (1 test)
 │   ├── test_predict.py           # Inference wrapper tests (3 tests)

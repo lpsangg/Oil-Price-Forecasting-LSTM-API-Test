@@ -269,3 +269,209 @@ def run_backtest_simulation(
     )
 
     return metrics, comparison_df
+
+
+def compute_portfolio_risk_metrics(
+    price_series: pd.Series,
+    dates: Optional[pd.Series] = None,
+    risk_free_rate: float = 0.04,
+    notional: float = 100000.0,
+) -> Dict[str, Any]:
+    """
+    Compute comprehensive quantitative risk metrics for energy portfolio assets.
+    - Value at Risk (VaR 95%, 99% for 1-day & 1-week, historical & parametric)
+    - Conditional Value at Risk (CVaR / Expected Shortfall 95%, 99%)
+    - Sharpe Ratio, Sortino Ratio, and Calmar Ratio
+    - Maximum Drawdown (MDD) and Drawdown series
+    - Stress Testing Scenarios with Dollar PnL impact
+    """
+    clean_series = price_series.dropna()
+    if len(clean_series) < 10:
+        return {
+            "error": "Insufficient data points for quantitative risk modeling (need >= 10)",
+            "ann_return": 0.0,
+            "ann_volatility": 0.0,
+            "sharpe_ratio": 0.0,
+            "sortino_ratio": 0.0,
+            "calmar_ratio": 0.0,
+            "mdd_pct": 0.0,
+            "mdd_dollar": 0.0,
+            "var_95_1d_pct": 0.0,
+            "var_95_1d_dollar": 0.0,
+            "var_99_1d_pct": 0.0,
+            "var_99_1d_dollar": 0.0,
+            "var_95_1w_pct": 0.0,
+            "var_95_1w_dollar": 0.0,
+            "var_99_1w_pct": 0.0,
+            "var_99_1w_dollar": 0.0,
+            "var_95_param_pct": 0.0,
+            "var_99_param_pct": 0.0,
+            "cvar_95_1d_pct": 0.0,
+            "cvar_95_1d_dollar": 0.0,
+            "cvar_99_1d_pct": 0.0,
+            "cvar_99_1d_dollar": 0.0,
+            "skewness": 0.0,
+            "kurtosis": 0.0,
+            "returns": pd.Series(dtype=float),
+            "drawdown_series": pd.Series(dtype=float),
+            "rolling_df": pd.DataFrame(),
+            "stress_scenarios": [],
+        }
+
+    returns = clean_series.pct_change().dropna()
+    ann_factor = 252
+
+    mean_daily = float(returns.mean())
+    std_daily = float(returns.std())
+    ann_return = mean_daily * ann_factor * 100
+    ann_volatility = std_daily * np.sqrt(ann_factor) * 100
+
+    skewness = float(returns.skew())
+    kurtosis = float(returns.kurtosis())
+
+    # Value at Risk (Historical)
+    var_95_1d_pct = float(-np.percentile(returns, 5) * 100)
+    var_99_1d_pct = float(-np.percentile(returns, 1) * 100)
+
+    # Parametric Gaussian VaR
+    var_95_param_pct = float(-(mean_daily - 1.644853 * std_daily) * 100)
+    var_99_param_pct = float(-(mean_daily - 2.326348 * std_daily) * 100)
+
+    # 1-Week (5 trading days) VaR scaling: sqrt(5)
+    var_95_1w_pct = float(var_95_1d_pct * np.sqrt(5))
+    var_99_1w_pct = float(var_99_1d_pct * np.sqrt(5))
+
+    var_95_1d_dollar = float(notional * (var_95_1d_pct / 100.0))
+    var_99_1d_dollar = float(notional * (var_99_1d_pct / 100.0))
+    var_95_1w_dollar = float(notional * (var_95_1w_pct / 100.0))
+    var_99_1w_dollar = float(notional * (var_99_1w_pct / 100.0))
+
+    # Conditional Value at Risk (CVaR / Expected Shortfall)
+    tail_95 = returns[returns <= np.percentile(returns, 5)]
+    cvar_95_1d_pct = float(-tail_95.mean() * 100) if len(tail_95) > 0 else var_95_1d_pct
+    cvar_95_1d_dollar = float(notional * (cvar_95_1d_pct / 100.0))
+
+    tail_99 = returns[returns <= np.percentile(returns, 1)]
+    cvar_99_1d_pct = float(-tail_99.mean() * 100) if len(tail_99) > 0 else var_99_1d_pct
+    cvar_99_1d_dollar = float(notional * (cvar_99_1d_pct / 100.0))
+
+    # Maximum Drawdown (MDD)
+    cum_max = clean_series.cummax()
+    drawdown_series = ((clean_series - cum_max) / cum_max) * 100
+    mdd_pct = float(drawdown_series.min())
+    mdd_dollar = float(notional * (abs(mdd_pct) / 100.0))
+
+    # Risk-Adjusted Ratios
+    rf_daily = (1.0 + risk_free_rate) ** (1.0 / ann_factor) - 1.0
+    sharpe = (
+        float((mean_daily - rf_daily) / std_daily * np.sqrt(ann_factor))
+        if std_daily > 0
+        else 0.0
+    )
+
+    downside = np.minimum(0.0, returns - rf_daily)
+    downside_std = float(np.sqrt(np.mean(downside**2)) * np.sqrt(ann_factor))
+    sortino = (
+        float((ann_return / 100.0 - risk_free_rate) / downside_std)
+        if downside_std > 0
+        else 0.0
+    )
+
+    calmar = (
+        float((ann_return / 100.0) / (abs(mdd_pct) / 100.0))
+        if abs(mdd_pct) > 0
+        else 0.0
+    )
+
+    # Rolling Metrics DataFrame (60-day window)
+    rolling_vol = (
+        returns.rolling(window=60, min_periods=20).std() * np.sqrt(ann_factor) * 100
+    )
+    rolling_mean = returns.rolling(window=60, min_periods=20).mean()
+    rolling_sharpe = (
+        (rolling_mean - rf_daily)
+        / (returns.rolling(window=60, min_periods=20).std().replace(0, 1e-9))
+        * np.sqrt(ann_factor)
+    )
+
+    date_vals = (
+        dates.iloc[1:].values
+        if dates is not None and len(dates) == len(clean_series)
+        else (clean_series.index[1:] if len(clean_series) > 1 else clean_series.index)
+    )
+
+    rolling_df = pd.DataFrame(
+        {
+            "date": date_vals,
+            "returns": returns.values,
+            "drawdown": drawdown_series.iloc[1:].values,
+            "rolling_vol_60d": rolling_vol.values,
+            "rolling_sharpe_60d": rolling_sharpe.values,
+        }
+    )
+
+    # Stress Testing Scenarios
+    stress_scenarios = [
+        {
+            "event": "2008 Global Financial Crisis",
+            "benchmark_shock": -54.2,
+            "impact_dollar": notional * (-0.542),
+            "description": "Subprime liquidity crisis and global demand contraction",
+        },
+        {
+            "event": "2014 OPEC Price War",
+            "benchmark_shock": -48.6,
+            "impact_dollar": notional * (-0.486),
+            "description": "US shale boom and market share defense by OPEC",
+        },
+        {
+            "event": "2020 COVID-19 Demand Shock",
+            "benchmark_shock": -68.4,
+            "impact_dollar": notional * (-0.684),
+            "description": "Global aviation groundings and storage capacity exhaustion",
+        },
+        {
+            "event": "2022 Geopolitical Conflict Surge",
+            "benchmark_shock": 42.1,
+            "impact_dollar": notional * 0.421,
+            "description": "Eastern European conflict and immediate supply risk premium",
+        },
+        {
+            "event": "3-Sigma Extreme Daily Shock",
+            "benchmark_shock": round(float(-3.0 * std_daily * 100), 2),
+            "impact_dollar": round(float(notional * (-3.0 * std_daily)), 2),
+            "description": "Statistical tail event (99.73% normal distribution bounds)",
+        },
+    ]
+
+    return {
+        "ann_return": round(ann_return, 2),
+        "ann_volatility": round(ann_volatility, 2),
+        "mean_daily_return": round(mean_daily * 100, 3),
+        "std_daily": round(std_daily * 100, 3),
+        "skewness": round(skewness, 2),
+        "kurtosis": round(kurtosis, 2),
+        "var_95_1d_pct": round(var_95_1d_pct, 2),
+        "var_95_1d_dollar": round(var_95_1d_dollar, 2),
+        "var_99_1d_pct": round(var_99_1d_pct, 2),
+        "var_99_1d_dollar": round(var_99_1d_dollar, 2),
+        "var_95_1w_pct": round(var_95_1w_pct, 2),
+        "var_95_1w_dollar": round(var_95_1w_dollar, 2),
+        "var_99_1w_pct": round(var_99_1w_pct, 2),
+        "var_99_1w_dollar": round(var_99_1w_dollar, 2),
+        "var_95_param_pct": round(var_95_param_pct, 2),
+        "var_99_param_pct": round(var_99_param_pct, 2),
+        "cvar_95_1d_pct": round(cvar_95_1d_pct, 2),
+        "cvar_95_1d_dollar": round(cvar_95_1d_dollar, 2),
+        "cvar_99_1d_pct": round(cvar_99_1d_pct, 2),
+        "cvar_99_1d_dollar": round(cvar_99_1d_dollar, 2),
+        "mdd_pct": round(mdd_pct, 2),
+        "mdd_dollar": round(mdd_dollar, 2),
+        "sharpe_ratio": round(sharpe, 2),
+        "sortino_ratio": round(sortino, 2),
+        "calmar_ratio": round(calmar, 2),
+        "returns": returns,
+        "drawdown_series": drawdown_series,
+        "rolling_df": rolling_df,
+        "stress_scenarios": stress_scenarios,
+    }
