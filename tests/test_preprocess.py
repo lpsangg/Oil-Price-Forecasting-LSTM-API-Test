@@ -1,5 +1,7 @@
 import pandas as pd
+
 from model.preprocess import fill_missing_with_rolling
+
 
 def test_preprocess_fills_nan():
     df = pd.DataFrame({"value": [1, None, 3]})

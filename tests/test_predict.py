@@ -1,16 +1,18 @@
 import numpy as np
 import pytest
-from model.predict import prepare_input, predict_next
+
+from model.predict import predict_next, prepare_input
 
 
 class DummyModel:
     def predict(self, x):
-        return np.array([[0.5]])   # giả sử mô hình dự đoán 0.5 scaled value
+        return np.array([[0.5]])  # giả sử mô hình dự đoán 0.5 scaled value
 
 
 class DummyScaler:
     def transform(self, x):
         return x * 0.1
+
     def inverse_transform(self, x):
         return x * 10
 

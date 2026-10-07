@@ -1,11 +1,12 @@
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler
 
+
 def create_dataset(series: np.ndarray, window: int = 5):
     X, y = [], []
 
     for i in range(window, len(series)):
-        X.append(series[i - window:i])
+        X.append(series[i - window : i])
         y.append(series[i])
 
     X = np.array(X)
@@ -32,13 +33,13 @@ def scale_series(train: np.ndarray, test: np.ndarray | None = None):
 # This block is kept as a usage example, not executed automatically.
 
 if __name__ == "__main__":
+    series = np.linspace(50, 100, 200)
     test_size = 50
     train_series = series[:-test_size]
     test_series = series[-test_size:]
 
     train_scaled, test_scaled, scaler = scale_series(
-        train_series.reshape(-1, 1),
-        test_series.reshape(-1, 1)
+        train_series.reshape(-1, 1), test_series.reshape(-1, 1)
     )
 
     window = 5

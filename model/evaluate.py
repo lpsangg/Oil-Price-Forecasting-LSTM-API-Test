@@ -1,59 +1,83 @@
+import os
+import sys
+
+import joblib
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-from tensorflow.keras.models import load_model
 from sklearn.metrics import mean_absolute_error, mean_squared_error
-import joblib
+from tensorflow.keras.models import load_model
 
-# Load scaler
-scaler = joblib.load("checkpoint/scaler.pkl")
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from model.dataloader import create_dataset
 
-# Load raw data
-df = pd.read_csv("data/raw_data.csv")
-series = df['value'].values.reshape(-1, 1)
 
-# Split train/test
-test_size = 50
-train_series = series[:-test_size]
+def evaluate_model(
+    model_path: str = "models/lstm_model.keras",
+    scaler_path: str = "models/scaler.pkl",
+    data_path: str = "data/preprocess-QDL-OPEC.csv",
+    window: int = 60,
+    test_size: int = 100,
+    plot: bool = False,
+):
+    """Evaluate trained LSTM model against test split."""
+    if not os.path.exists(scaler_path):
+        if os.path.exists("checkpoint/scaler.pkl"):
+            scaler_path = "checkpoint/scaler.pkl"
+        else:
+            raise FileNotFoundError(f"Scaler not found at {scaler_path}")
 
-# Scale with fitted scaler
-train_scaled = scaler.transform(train_series)
+    if not os.path.exists(model_path):
+        if os.path.exists("checkpoint/best_model.h5"):
+            model_path = "checkpoint/best_model.h5"
+        elif os.path.exists("checkpoint/fold_3.h5"):
+            model_path = "checkpoint/fold_3.h5"
+        else:
+            raise FileNotFoundError(f"Model not found at {model_path}")
 
-# Create dataset for evaluation
-def create_dataset(series, window=5):
-    X, y = [], []
-    for i in range(window, len(series)):
-        X.append(series[i-window:i])
-        y.append(series[i])
-    return np.array(X), np.array(y)
+    scaler = joblib.load(scaler_path)
 
-window = 5
-x_train, y_train = create_dataset(train_scaled, window)
-x_train = x_train.reshape((x_train.shape[0], x_train.shape[1], 1))
+    if not os.path.exists(data_path):
+        if os.path.exists("data/QDL-OPEC.csv"):
+            data_path = "data/QDL-OPEC.csv"
+        else:
+            raise FileNotFoundError(f"Data file not found at {data_path}")
 
-# Load trained LSTM model
-model = load_model("checkpoint/best_model.h5")
+    df = pd.read_csv(data_path)
+    series = df["value"].dropna().values.reshape(-1, 1)
 
-# Predict
-y_pred_scaled = model.predict(x_train)
+    train_series = series[:-test_size]
+    test_series = series[-test_size:]
 
-# Inverse transform
-y_train_inv = scaler.inverse_transform(y_train)
-y_pred_inv = scaler.inverse_transform(y_pred_scaled)
+    # Scale with fitted scaler
+    train_scaled = scaler.transform(train_series)
 
-# Metrics
-mae = mean_absolute_error(y_train_inv, y_pred_inv)
-rmse = mean_squared_error(y_train_inv, y_pred_inv, squared=False)
+    x_train, y_train = create_dataset(train_scaled, window=window)
 
-print("MAE:", mae)
-print("RMSE:", rmse)
+    model = load_model(model_path)
+    y_pred_scaled = model.predict(x_train, verbose=0)
 
-# Plot
-plt.figure(figsize=(12, 6))
-plt.plot(y_train_inv, label="Actual", color="blue")
-plt.plot(y_pred_inv, label="Predicted", color="red")
-plt.title("Training Data: Actual vs Predicted")
-plt.xlabel("Time")
-plt.ylabel("Value")
-plt.legend()
-plt.show()
+    y_train_inv = scaler.inverse_transform(y_train)
+    y_pred_inv = scaler.inverse_transform(y_pred_scaled)
+
+    mae = mean_absolute_error(y_train_inv, y_pred_inv)
+    rmse = float(np.sqrt(mean_squared_error(y_train_inv, y_pred_inv)))
+
+    print(f"MAE:  {mae:.4f}")
+    print(f"RMSE: {rmse:.4f}")
+
+    if plot:
+        plt.figure(figsize=(12, 6))
+        plt.plot(y_train_inv, label="Actual", color="blue")
+        plt.plot(y_pred_inv, label="Predicted", color="red")
+        plt.title("Actual vs Predicted Oil Prices")
+        plt.xlabel("Time Step")
+        plt.ylabel("Value (USD)")
+        plt.legend()
+        plt.show()
+
+    return {"mae": float(mae), "rmse": float(rmse)}
+
+
+if __name__ == "__main__":
+    evaluate_model(window=60, plot=False)

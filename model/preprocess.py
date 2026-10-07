@@ -1,6 +1,15 @@
-import pandas as pd
-from matplotlib.dates import YearLocator, DateFormatter, MonthLocator
+import os
+import sys
+
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from matplotlib.dates import DateFormatter, MonthLocator, YearLocator
+
+try:
+    from model.dataloader import create_dataset, scale_series
+except ImportError:
+    from dataloader import create_dataset, scale_series
 
 
 def load_raw_data(csv_path: str) -> pd.DataFrame:
@@ -19,39 +28,58 @@ def create_continuous_series(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def fill_missing_with_rolling(df: pd.DataFrame, window_size: int = 5) -> pd.DataFrame:
-    """Fill missing values using centered rolling average."""
+    """Fill missing values using centered rolling average (with forward/backward fallback)."""
     df = df.copy()
 
-    # tính rolling
-    rolling = df["value"].rolling(
-        window=window_size * 2 + 1,
-        min_periods=1,
-        center=True
-    ).mean()
+    # Tính rolling mean
+    rolling = (
+        df["value"]
+        .rolling(window=window_size * 2 + 1, min_periods=1, center=True)
+        .mean()
+    )
 
-    # KHÔNG dùng inplace để tránh FutureWarning
+    # Điền missing bằng rolling mean, sau đó bfill/ffill cho các cạnh nếu còn sót
     df["value"] = df["value"].fillna(rolling)
+    df["value"] = df["value"].bfill().ffill()
 
     return df
 
 
-def preprocess_data(csv_path: str) -> pd.DataFrame:
-    """Full preprocessing pipeline."""
+def preprocess_data(csv_path: str, window: int | None = None, test_ratio: float = 0.2):
+    """
+    Full preprocessing pipeline.
+    - If window is None: returns cleaned DataFrame with ['date', 'value', 'Year'].
+    - If window is an int: returns (X_train, X_test, y_train, y_test, scaler).
+    """
     df = load_raw_data(csv_path)
     df = create_continuous_series(df)
     df = fill_missing_with_rolling(df, window_size=5)
 
-    # reset index + thêm Year
+    # Reset index + thêm Year
     df = df.reset_index()
     df["date"] = pd.to_datetime(df["date"])
     df["Year"] = df["date"].dt.year
     df = df.sort_values("date")
 
-    return df
+    if window is None:
+        return df
+
+    # Chuyển thành supervised dataset cho model training
+    values = df["value"].values.reshape(-1, 1)
+    test_count = max(int(len(values) * test_ratio), window + 1)
+    train_raw = values[:-test_count]
+    test_raw = values[-test_count:]
+
+    train_scaled, test_scaled, scaler = scale_series(train_raw, test_raw)
+
+    X_train, y_train = create_dataset(train_scaled, window=window)
+    X_test, y_test = create_dataset(test_scaled, window=window)
+
+    return X_train, X_test, y_train, y_test, scaler
 
 
 def plot_series(df: pd.DataFrame):
-    """Plot series (optional, not used in unit test)."""
+    """Plot series (optional visualization)."""
     plt.figure(figsize=(10, 5))
     plt.plot(df["date"], df["value"], label="Value")
     plt.xlabel("Year")
@@ -73,12 +101,10 @@ def plot_series(df: pd.DataFrame):
 
 
 def save_preprocessed(df: pd.DataFrame, out_path: str):
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     df.to_csv(out_path, index=False)
 
 
-# --------------------------------------------------------------
-# Main execution block (script mode)
-# --------------------------------------------------------------
 if __name__ == "__main__":
     input_path = "./data/QDL-OPEC.csv"
     output_path = "./data/preprocess-QDL-OPEC.csv"

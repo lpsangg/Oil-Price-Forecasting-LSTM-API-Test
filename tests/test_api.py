@@ -1,11 +1,12 @@
+import os
+import sys
+
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
-import numpy as np
-import sys
-import os
 
 # Add parent directory to path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # Import after adding to path
 from app.main import app
@@ -41,10 +42,9 @@ def test_predict_without_data():
 
 def test_predict_with_insufficient_data():
     """Test prediction with insufficient data points"""
-    response = client.post("/predict", json={
-        "data": [100.0, 101.0, 102.0],
-        "window": 60
-    })
+    response = client.post(
+        "/predict", json={"data": [100.0, 101.0, 102.0], "window": 60}
+    )
     assert response.status_code in [400, 503]
 
 
@@ -53,10 +53,7 @@ def test_predict_with_valid_data():
     # Generate dummy data
     data = list(np.random.uniform(50, 150, 60))
 
-    response = client.post("/predict", json={
-        "data": data,
-        "window": 60
-    })
+    response = client.post("/predict", json={"data": data, "window": 60})
 
     # May fail if model not loaded, but should not crash
     assert response.status_code in [200, 503]
@@ -72,10 +69,7 @@ def test_predict_with_custom_window():
     """Test prediction with custom window size"""
     data = list(np.random.uniform(50, 150, 100))
 
-    response = client.post("/predict", json={
-        "data": data,
-        "window": 30
-    })
+    response = client.post("/predict", json={"data": data, "window": 30})
 
     assert response.status_code in [200, 503]
 
@@ -95,13 +89,37 @@ def test_model_info():
 
 def test_train_with_invalid_path():
     """Test training with invalid data path"""
-    response = client.post("/train", json={
-        "csv_path": "nonexistent_file.csv",
-        "window": 10,
-        "epochs": 1
-    })
+    response = client.post(
+        "/train", json={"csv_path": "nonexistent_file.csv", "window": 10, "epochs": 1}
+    )
 
     assert response.status_code == 404
+
+
+def test_train_endpoint_success(tmp_path):
+    """Test training endpoint with valid data and small parameters"""
+    csv_file = tmp_path / "sample_train.csv"
+    import pandas as pd
+
+    df = pd.DataFrame(
+        {
+            "date": pd.date_range("2023-01-01", periods=50),
+            "value": np.linspace(60, 80, 50),
+        }
+    )
+    df.to_csv(csv_file, index=False)
+
+    response = client.post(
+        "/train",
+        json={"csv_path": str(csv_file), "window": 5, "epochs": 1, "batch_size": 8},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "message" in data
+    assert "final_loss" in data
+    assert "final_val_loss" in data
+    assert data["epochs_completed"] == 1
 
 
 def test_api_docs_accessible():
